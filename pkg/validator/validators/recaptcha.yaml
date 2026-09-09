@@ -12,6 +12,7 @@ validators:
       url: https://www.google.com/recaptcha/api/siteverify
       auth:
         type: none
+        secret_group: "token"
       headers:
         - name: Content-Type
           value: application/x-www-form-urlencoded
