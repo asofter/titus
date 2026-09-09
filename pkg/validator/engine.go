@@ -19,6 +19,7 @@ func NewDefaultEngine(workers int) *Engine {
 	validators = append(validators, NewTwilioValidator())
 	validators = append(validators, NewAzureStorageValidator())
 	validators = append(validators, NewPostgresValidator())
+	validators = append(validators, NewMySQLValidator())
 	validators = append(validators, NewBrowserStackValidator())
 	validators = append(validators, NewAmplitudeValidator())
 	validators = append(validators, NewShopifyValidator())
