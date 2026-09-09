@@ -60,14 +60,24 @@ func TestMySQLValidator_ExtractDSN(t *testing.T) {
 			wantDSN: "user:pass@tcp(db.example.com:4406)/app?timeout=5s",
 		},
 		{
-			name:    "URI with query params",
+			name:    "URI with ssl-mode translates to tls param",
 			uri:     "mysql://user:pass@db.example.com:3306/app?ssl-mode=REQUIRED",
-			wantDSN: "user:pass@tcp(db.example.com:3306)/app?timeout=5s&ssl-mode=REQUIRED",
+			wantDSN: "user:pass@tcp(db.example.com:3306)/app?timeout=5s&tls=skip-verify",
 		},
 		{
 			name:    "URI without database",
 			uri:     "mysql://user:pass@db.example.com:3306",
 			wantDSN: "user:pass@tcp(db.example.com:3306)/?timeout=5s",
+		},
+		{
+			name:    "IPv6 host without port defaults to 3306",
+			uri:     "mysql://user:pass@[2001:db8::1]/db",
+			wantDSN: "user:pass@tcp(2001:db8::1:3306)/db?timeout=5s",
+		},
+		{
+			name:    "IPv6 host with port",
+			uri:     "mysql://user:pass@[2001:db8::1]:3307/db",
+			wantDSN: "user:pass@tcp(2001:db8::1:3307)/db?timeout=5s",
 		},
 		{
 			name:    "missing password",

@@ -81,18 +81,26 @@ func (v *MySQLValidator) extractDSN(match *types.Match) (string, error) {
 		return "", fmt.Errorf("missing user or password")
 	}
 
-	host := u.Host
-	if !strings.Contains(host, ":") {
-		host += ":3306"
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" {
+		port = "3306"
 	}
 
 	dbName := strings.TrimPrefix(u.Path, "/")
 
-	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?timeout=%s",
-		user, pass, host, dbName, v.timeout)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?timeout=%s",
+		user, pass, host, port, dbName, v.timeout)
 
-	if u.RawQuery != "" {
-		dsn += "&" + u.RawQuery
+	q := u.Query()
+	if mode := q.Get("ssl-mode"); mode != "" {
+		q.Del("ssl-mode")
+		if strings.EqualFold(mode, "REQUIRED") || strings.EqualFold(mode, "VERIFY_CA") || strings.EqualFold(mode, "VERIFY_IDENTITY") {
+			q.Set("tls", "skip-verify")
+		}
+	}
+	if encoded := q.Encode(); encoded != "" {
+		dsn += "&" + encoded
 	}
 
 	return dsn, nil
