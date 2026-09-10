@@ -21,6 +21,7 @@ require (
 	github.com/fatih/color v1.18.0
 	github.com/flier/gohs v1.2.2
 	github.com/go-git/go-git/v5 v5.16.4
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/go-containerregistry v0.21.5
 	github.com/google/go-github/v57 v57.0.0
 	github.com/jackc/pgx/v5 v5.7.2
@@ -91,7 +92,6 @@ require (
 	github.com/go-git/go-billy/v5 v5.6.2 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-sql-driver/mysql v1.10.1 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
