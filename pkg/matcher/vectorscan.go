@@ -29,13 +29,13 @@ import (
 //
 // Thread Safety:
 // - The compiled database is immutable and safe for concurrent use
-// - Each goroutine needs its own scratch space (handled via sync.Pool)
+// - Each goroutine needs its own scratch space (handled via a bounded pool)
 // - Match() is safe for concurrent calls from multiple goroutines
 type VectorscanMatcher struct {
 	rules        []*types.Rule
 	db           hyperscan.BlockDatabase
 	scratch      *hyperscan.Scratch
-	scratchPool  sync.Pool
+	scratchPool  chan *hyperscan.Scratch
 	prefilter    *prefilter.Prefilter
 	contextLines int
 
@@ -173,16 +173,10 @@ func NewVectorscanWithTimeout(rules []*types.Rule, contextLines int, warnf func(
 		}
 		m.scratch = scratch
 
-		// Initialize scratch pool for concurrent matching
-		m.scratchPool = sync.Pool{
-			New: func() interface{} {
-				s, err := m.scratch.Clone()
-				if err != nil {
-					panic(fmt.Sprintf("failed to clone scratch space: %v", err))
-				}
-				return s
-			},
-		}
+		// Initialize scratch pool for concurrent matching. A buffered channel
+		// rather than a sync.Pool: a scratch owns a C allocation that the Go GC
+		// cannot see, so a pool that may drop entries leaks one per drop.
+		m.scratchPool = make(chan *hyperscan.Scratch, runtime.GOMAXPROCS(0))
 	}
 
 	return m, nil
@@ -525,6 +519,35 @@ func (m *VectorscanMatcher) MatchWithBlobIDAndOptions(content []byte, blobID typ
 	return m.matchChunked(content, chunks, blobID, opts)
 }
 
+// acquireScratch takes a scratch from the pool, cloning a new one when the
+// pool is empty. Every scratch handed out is either returned to the pool or
+// freed by releaseScratch, so none is ever dropped.
+func (m *VectorscanMatcher) acquireScratch() (*hyperscan.Scratch, error) {
+	select {
+	case s := <-m.scratchPool:
+		return s, nil
+	default:
+	}
+
+	s, err := m.scratch.Clone()
+	if err != nil {
+		return nil, fmt.Errorf("clone scratch space: %w", err)
+	}
+
+	return s, nil
+}
+
+// releaseScratch returns a scratch to the pool, or frees it outright when the
+// pool is full. hs_free_scratch is the only thing that releases the underlying
+// C allocation; dropping the Go pointer would leak it.
+func (m *VectorscanMatcher) releaseScratch(s *hyperscan.Scratch) {
+	select {
+	case m.scratchPool <- s:
+	default:
+		_ = s.Free()
+	}
+}
+
 // matchChunk performs matching on a single chunk of content.
 //
 // Hyperscan is used as a prefilter: its callback fires for every end position of a
@@ -537,12 +560,12 @@ func (m *VectorscanMatcher) matchChunk(content []byte, blobID types.BlobID, opts
 
 	// Only get scratch from pool if we have a Hyperscan database
 	if m.db != nil {
-		scratchI := m.scratchPool.Get()
-		if scratchI == nil {
-			return nil, fmt.Errorf("failed to get scratch space from pool")
+		s, err := m.acquireScratch()
+		if err != nil {
+			return nil, err
 		}
-		scratch = scratchI.(*hyperscan.Scratch)
-		defer m.scratchPool.Put(scratch)
+		scratch = s
+		defer m.releaseScratch(scratch)
 	}
 
 	// Use Hyperscan only as a prefilter: collect the set of rule IDs that had any match.
@@ -1047,10 +1070,27 @@ func (m *VectorscanMatcher) DrainTimedOut() ([]*types.Match, error) {
 
 // Close releases all resources associated with the matcher.
 func (m *VectorscanMatcher) Close() error {
-	// Note: We don't drain scratchPool - sync.Pool automatically GCs unused items
-	// Attempting to drain would cause infinite loop since Pool.New() clones scratches
-
 	var closeErrors []error
+
+	// Drain the pool. Each pooled scratch holds a C allocation, so letting the
+	// channel go out of scope would leak every scratch still parked in it.
+	if m.scratchPool != nil {
+		for {
+			select {
+			case s := <-m.scratchPool:
+				if err := s.Free(); err != nil {
+					closeErrors = append(closeErrors, fmt.Errorf("free pooled scratch: %w", err))
+				}
+
+				continue
+			default:
+			}
+
+			break
+		}
+
+		m.scratchPool = nil
+	}
 
 	// Free template scratch
 	if m.scratch != nil {
