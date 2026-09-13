@@ -97,3 +97,37 @@ func TestClose_DrainsScratchPool(t *testing.T) {
 	require.NoError(t, m.Close())
 	assert.Nil(t, m.scratchPool, "Close must free pooled scratches, not leave them to the GC")
 }
+
+func TestClose_WaitsForInFlightMatches(t *testing.T) {
+	m := newScratchTestMatcher(t)
+
+	content := []byte("no secret here, AKIA is not followed by a key")
+
+	// Close racing live matches: a scratch returned after the drain would be
+	// stranded, and a clone off an already-freed template is worse than a
+	// leak. Run under -race, which also catches the unguarded pool access.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for range 50 {
+				// Once Close wins the race every later match reports it,
+				// which is the documented outcome rather than a crash.
+				if _, err := m.Match(content); err != nil {
+					assert.ErrorIs(t, err, errMatcherClosed)
+
+					return
+				}
+			}
+		}()
+	}
+
+	require.NoError(t, m.Close())
+	wg.Wait()
+
+	assert.Nil(t, m.scratchPool, "Close must leave the pool drained")
+	assert.NoError(t, m.Close(), "Close must be idempotent")
+}

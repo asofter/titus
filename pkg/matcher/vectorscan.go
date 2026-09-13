@@ -32,10 +32,16 @@ import (
 // - Each goroutine needs its own scratch space (handled via a bounded pool)
 // - Match() is safe for concurrent calls from multiple goroutines
 type VectorscanMatcher struct {
-	rules        []*types.Rule
-	db           hyperscan.BlockDatabase
-	scratch      *hyperscan.Scratch
-	scratchPool  chan *hyperscan.Scratch
+	rules       []*types.Rule
+	db          hyperscan.BlockDatabase
+	scratch     *hyperscan.Scratch
+	scratchPool chan *hyperscan.Scratch
+
+	// closeMu guards the scratch lifecycle. Readers are in-flight matches,
+	// the writer is Close, so Close cannot run while a match still holds a
+	// scratch or is about to clone one from the template.
+	closeMu      sync.RWMutex
+	closed       bool
 	prefilter    *prefilter.Prefilter
 	contextLines int
 
@@ -519,6 +525,9 @@ func (m *VectorscanMatcher) MatchWithBlobIDAndOptions(content []byte, blobID typ
 	return m.matchChunked(content, chunks, blobID, opts)
 }
 
+// errMatcherClosed is returned when a match starts after Close has run.
+var errMatcherClosed = errors.New("vectorscan: matcher is closed")
+
 // acquireScratch takes a scratch from the pool, cloning a new one when the
 // pool is empty. Every scratch handed out is either returned to the pool or
 // freed by releaseScratch, so none is ever dropped.
@@ -558,6 +567,16 @@ func (m *VectorscanMatcher) releaseScratch(s *hyperscan.Scratch) {
 func (m *VectorscanMatcher) matchChunk(content []byte, blobID types.BlobID, opts Options) (*MatchResult, error) {
 	var scratch *hyperscan.Scratch
 
+	// Held for the whole match: Close frees the template scratch, drains the
+	// pool and nils the database, so every read of them below has to be inside
+	// the lock. Deferred first, so it unlocks after the scratch is released.
+	m.closeMu.RLock()
+	defer m.closeMu.RUnlock()
+
+	if m.closed {
+		return nil, errMatcherClosed
+	}
+
 	// Only get scratch from pool if we have a Hyperscan database
 	if m.db != nil {
 		s, err := m.acquireScratch()
@@ -565,6 +584,7 @@ func (m *VectorscanMatcher) matchChunk(content []byte, blobID types.BlobID, opts
 			return nil, err
 		}
 		scratch = s
+
 		defer m.releaseScratch(scratch)
 	}
 
@@ -1070,6 +1090,17 @@ func (m *VectorscanMatcher) DrainTimedOut() ([]*types.Match, error) {
 
 // Close releases all resources associated with the matcher.
 func (m *VectorscanMatcher) Close() error {
+	// Waits for in-flight matches, so no scratch can be returned to the pool
+	// after it has been drained, and no clone can come off a freed template.
+	m.closeMu.Lock()
+	defer m.closeMu.Unlock()
+
+	if m.closed {
+		return nil
+	}
+
+	m.closed = true
+
 	var closeErrors []error
 
 	// Drain the pool. Each pooled scratch holds a C allocation, so letting the
