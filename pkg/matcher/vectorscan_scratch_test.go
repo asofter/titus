@@ -70,16 +70,12 @@ func TestScratchPool_ConcurrentMatchStaysBounded(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range cap(m.scratchPool) * 4 {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			for range 25 {
 				_, err := m.Match(content)
 				assert.NoError(t, err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -108,11 +104,7 @@ func TestClose_WaitsForInFlightMatches(t *testing.T) {
 	// leak. Run under -race, which also catches the unguarded pool access.
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			for range 50 {
 				// Once Close wins the race every later match reports it,
 				// which is the documented outcome rather than a crash.
@@ -122,7 +114,7 @@ func TestClose_WaitsForInFlightMatches(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	require.NoError(t, m.Close())
